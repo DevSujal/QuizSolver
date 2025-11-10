@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
 // Initialize the Gemini API client
-// Make sure to set your GEMINI_API_KEY in a .env.local file
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+// Make sure to set your NEXT_PUBLIC_GEMINI_API_KEY in environment variables
+const genAI = new GoogleGenerativeAI(process.env.NEXT_PUBLIC_GEMINI_API_KEY || '');
 
 // small helper to sleep for ms
 function sleep(ms: number) {
@@ -88,13 +88,13 @@ export async function POST(req: NextRequest) {
   const { text, model } = await req.json();
 
   // Debug: Check if API key is loaded
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
   console.log('API Key exists:', !!apiKey);
   console.log('API Key length:', apiKey?.length || 0);
   console.log('API Key prefix:', apiKey?.substring(0, 10) || 'undefined');
 
   if (!apiKey) {
-    return NextResponse.json({ error: 'GEMINI_API_KEY not configured' }, { status: 500 });
+    return NextResponse.json({ error: 'NEXT_PUBLIC_GEMINI_API_KEY not configured' }, { status: 500 });
   }
 
   if (!text) {

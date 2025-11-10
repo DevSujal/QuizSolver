@@ -57,7 +57,7 @@ Create a `.env.local` file in the root directory:
 
 ```bash
 # .env.local
-GEMINI_API_KEY=your_gemini_api_key_here
+NEXT_PUBLIC_GEMINI_API_KEY=your_gemini_api_key_here
 ```
 
 To get your Gemini API key:
@@ -167,12 +167,12 @@ const inter = Inter({ subsets: ['latin'] })
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `GEMINI_API_KEY` | Your Google Gemini API key | Yes |
+| `NEXT_PUBLIC_GEMINI_API_KEY` | Your Google Gemini API key | Yes |
 
 ## 🐛 Troubleshooting
 
 ### "Error fetching from Gemini API"
-- Check that your `GEMINI_API_KEY` is correctly set in `.env.local`
+- Check that your `NEXT_PUBLIC_GEMINI_API_KEY` is correctly set in `.env.local`
 - Ensure your API key is valid and has permissions
 - Verify you haven't exceeded your quota limits
 
