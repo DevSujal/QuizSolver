@@ -58,16 +58,49 @@ async function retryWithBackoff<T>(
   throw new Error('Max retries exceeded');
 }
 
-// Helper function to extract questions and options from raw text using LLM
-// Sends entire text to LLM in one request for efficiency
+// Helper function to extract questions and options from raw text using Gemini
+// Processes text in chunks to avoid token limits
 async function extractQuestionsFromText(
   rawText: string,
   modelName: string = 'gemini-2.0-flash-lite',
   provider: string = 'gemini'
 ): Promise<{ question: string; options: string[] }[]> {
-  console.log(`Extracting questions from text (${rawText.length} characters) using ${provider}...`);
+  const genAI = new GoogleGenerativeAI(process.env.NEXT_PUBLIC_GEMINI_API_KEY || '');
+  const model = genAI.getGenerativeModel({ model: modelName });
 
-  const prompt = `You are provided with text that contains multiple-choice questions (MCQs). Extract all the questions and their answer options.
+  // Split text into chunks based on character count to avoid token limits
+  // Roughly 4 chars = 1 token, keep chunks under 25k chars (~6k tokens)
+  const MAX_CHUNK_SIZE = 25000;
+  const chunks: string[] = [];
+
+  if (rawText.length <= MAX_CHUNK_SIZE) {
+    chunks.push(rawText);
+  } else {
+    // Split by trying to find natural breakpoints (double newlines)
+    const parts = rawText.split('\n\n');
+    let currentChunk = '';
+
+    for (const part of parts) {
+      if ((currentChunk + part).length > MAX_CHUNK_SIZE && currentChunk) {
+        chunks.push(currentChunk);
+        currentChunk = part;
+      } else {
+        currentChunk += (currentChunk ? '\n\n' : '') + part;
+      }
+    }
+    if (currentChunk) {
+      chunks.push(currentChunk);
+    }
+  }
+
+  console.log(`Text split into ${chunks.length} chunks for extraction`);
+
+  const allQuestions: { question: string; options: string[] }[] = [];
+
+  for (let i = 0; i < chunks.length; i++) {
+    console.log(`Extracting questions from chunk ${i + 1}/${chunks.length}...`);
+
+    const prompt = `You are provided with text that contains multiple-choice questions (MCQs). Extract all the questions and their answer options.
 
 TEXT:
 ${rawText}
@@ -88,42 +121,42 @@ Important:
 - Return ONLY valid JSON, nothing else
 - If no questions are found, return an empty array []`;
 
-  try {
-    let response: string;
-    
-    if (provider === 'ollama') {
-      response = await callOllama(prompt, modelName);
-    } else {
-      // Gemini logic
-      const genAI = new GoogleGenerativeAI(process.env.NEXT_PUBLIC_GEMINI_API_KEY || '');
-      const model = genAI.getGenerativeModel({ model: modelName });
-      
+    try {
+      // Use retry logic for API calls
       const result = await retryWithBackoff(async () => {
         const res = await model.generateContent(prompt);
         return res;
       });
-      const geminiResponse = await result.response;
-      response = await geminiResponse.text();
-    }
+      const response = await result.response;
+      const text = await response.text();
 
-    // Extract JSON from response
-    const start = response.indexOf('[');
-    const end = response.lastIndexOf(']');
-    if (start === -1 || end === -1) {
-      console.warn(`Could not find JSON array in extraction response`);
-      return [];
-    }
-    const jsonString = response.substring(start, end + 1);
-    const parsed = JSON.parse(jsonString) as Array<{ question: string; options: string[] }>;
+      // Extract JSON from response
+      const start = text.indexOf('[');
+      const end = text.lastIndexOf(']');
+      if (start === -1 || end === -1) {
+        console.warn(`Could not find JSON array in extraction response for chunk ${i + 1}`);
+        continue;
+      }
+      const jsonString = text.substring(start, end + 1);
+      const parsed = JSON.parse(jsonString) as Array<{ question: string; options: string[] }>;
 
-    console.log(`Total extracted: ${parsed.length} questions`);
-    return parsed;
-  } catch (err) {
-    console.error(`Error extracting questions:`, err);
-    return [];
+      console.log(`Extracted ${parsed.length} questions from chunk ${i + 1}`);
+      allQuestions.push(...parsed);
+    } catch (err) {
+      console.error(`Error extracting questions from chunk ${i + 1}:`, err);
+      // Continue with other chunks even if one fails
+    }
   }
-}// Batch multiple questions into a single prompt and return answers for all of them
-async function findAnswersBatch(
+
+  console.log(`Total extracted: ${allQuestions.length} questions from all chunks`);
+  return allQuestions;
+}
+
+export const dynamic = 'force-dynamic';
+export const maxDuration = 300;
+
+// Batch multiple questions into a single prompt and return answers for all of them using Gemini.
+async function findAnswersBatchGemini(
   questions: { question: string; options: string[] }[],
   modelName: string = 'gemini-2.0-flash-lite',
   provider: string = 'gemini'
@@ -138,61 +171,42 @@ async function findAnswersBatch(
   const prompt = `You are provided with multiple multiple-choice questions (MCQs).\n\n${promptParts.join('\n\n')}\n\nFor each question, identify all correct answer choices and return a single JSON array of objects with the following shape:\n[ { "question": "<the question text>", "answers": ["Correct Answer 1", "Correct Answer 2"] }, ... ]\nIf no answer is correct for a question, return an empty array for "answers". The response must be valid JSON and nothing else.`;
 
   try {
-    let response: string;
-    
-    if (provider === 'ollama') {
-      response = await callOllama(prompt, modelName);
-    } else {
-      // Gemini logic
-      const model = genAI.getGenerativeModel({ model: modelName });
-      
-      const result = await model.generateContent(prompt);
-      const geminiResponse = await result.response;
-      response = await geminiResponse.text();
-    }
+    const result = await retryWithBackoff(async () => {
+      const res = await model.generateContent(prompt);
+      return res;
+    });
+    const response = await result.response;
+    const text = await response.text();
 
     // Extract the first JSON array-like substring from the response
-    const start = response.indexOf('[');
-    const end = response.lastIndexOf(']');
+    const start = text.indexOf('[');
+    const end = text.lastIndexOf(']');
     if (start === -1 || end === -1) {
       throw new Error('Could not find JSON array in model response');
     }
-    const jsonString = response.substring(start, end + 1);
+    const jsonString = text.substring(start, end + 1);
     const parsed = JSON.parse(jsonString) as Array<{ question: string; answers: string[] }>;
 
     // Normalize shape to return { question, answer }
     const mapped = parsed.map((p) => ({ question: p.question, answer: p.answers }));
     return mapped;
   } catch (err) {
-    console.error(`${provider} API batch error:`, err);
-    // Return error responses for each question
-    return questions.map((q) => ({ 
-      question: q.question, 
-      answer: [`Error: API call failed`] 
-    }));
+    console.error('Gemini API batch error:', err);
+    // If we get here, return errors for each question
+    console.error('Returning error responses for all questions in batch');
+    return questions.map((q) => ({ question: q.question, answer: [`Error: API call failed`] }));
   }
 }
 
 export async function POST(req: NextRequest) {
   const { text, model, provider } = await req.json();
 
-  // Validate provider
-  const validProviders = ['gemini', 'ollama'];
-  const selectedProvider = validProviders.includes(provider) ? provider : 'gemini';
+  // Debug: Check if API key is loaded
+  const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
+  console.log('API Key exists:', !!apiKey);
 
-  // Validate API keys based on provider
-  if (selectedProvider === 'gemini') {
-    const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
-    console.log('Gemini API Key exists:', !!apiKey);
-    if (!apiKey) {
-      return NextResponse.json({ error: 'NEXT_PUBLIC_GEMINI_API_KEY not configured' }, { status: 500 });
-    }
-  } else if (selectedProvider === 'ollama') {
-    const ollamaUrl = process.env.NEXT_PUBLIC_OLLAMA_API_URL;
-    console.log('Ollama URL:', ollamaUrl);
-    if (!ollamaUrl) {
-      return NextResponse.json({ error: 'NEXT_PUBLIC_OLLAMA_API_URL not configured' }, { status: 500 });
-    }
+  if (!apiKey) {
+    return NextResponse.json({ error: 'NEXT_PUBLIC_GEMINI_API_KEY not configured' }, { status: 500 });
   }
 
   if (!text) {
@@ -224,34 +238,30 @@ export async function POST(req: NextRequest) {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
         };
 
+        // Step 1: Extract questions
         console.log('Step 1: Extracting questions from text using LLM...');
-        sendData({ type: 'status', message: '🤔 Analyzing text for questions...', progress: 10 });
-
-        // Add thinking delay to show processing
-        await sleep(1000);
-        sendData({ type: 'status', message: '🔍 Extracting questions...', progress: 25 });
-
-        // Use LLM to extract questions and options from the cleaned text
-        const questions = await extractQuestionsFromText(cleanedText, selectedModel, selectedProvider);
+        sendData({ type: 'status', message: 'Extracting questions from text...', step: 1 });
+        
+        const questions = await extractQuestionsFromText(cleanedText, selectedModel);
 
         if (questions.length === 0) {
-          sendData({
-            type: 'error',
-            message: 'No questions found in the text. Please make sure your text contains MCQ questions.'
-          });
+          sendData({ type: 'error', message: 'No questions found in the text. Please make sure your text contains MCQ questions.' });
           controller.close();
           return;
         }
 
-        console.log(`Step 2: Found ${questions.length} questions, now finding answers in batches...`);
-        sendData({
-          type: 'questions',
+        // Send extracted questions
+        console.log(`Found ${questions.length} questions`);
+        sendData({ 
+          type: 'questions', 
           data: questions,
-          count: questions.length,
-          progress: 40
+          count: questions.length 
         });
 
-        // Process questions in batches of 20 to avoid overwhelming the LLM
+        // Step 2: Process answers in batches
+        console.log(`Step 2: Found ${questions.length} questions, now finding answers in batches...`);
+        sendData({ type: 'status', message: `Found ${questions.length} questions. Starting answer generation...`, step: 2 });
+
         const BATCH_SIZE = 20;
         const allAnswers: { question: string; answer: string[] }[] = [];
 
@@ -261,48 +271,41 @@ export async function POST(req: NextRequest) {
           const totalBatches = Math.ceil(questions.length / BATCH_SIZE);
 
           console.log(`Processing batch ${batchNum}/${totalBatches} (${batch.length} questions)`);
-
-          // Show thinking for each batch
-          sendData({
-            type: 'status',
-            message: `🧠 Thinking about batch ${batchNum}/${totalBatches}...`,
-            progress: 40 + Math.round((i / questions.length) * 50)
+          sendData({ 
+            type: 'progress', 
+            message: `Processing batch ${batchNum}/${totalBatches}...`,
+            current: i + batch.length,
+            total: questions.length,
+            percentage: Math.round(((i + batch.length) / questions.length) * 100)
           });
 
-          await sleep(500); // Brief thinking pause
-
-          sendData({
-            type: 'status',
-            message: `✨ Finding answers for batch ${batchNum}/${totalBatches}...`,
-            progress: 50 + Math.round((i / questions.length) * 45)
-          });
-
-          const batchAnswers = await findAnswersBatch(batch, selectedModel, selectedProvider);
+          const batchAnswers = await findAnswersBatchGemini(batch, selectedModel);
           allAnswers.push(...batchAnswers);
 
           // Stream each batch of answers as they complete
-          sendData({
-            type: 'batch_complete',
+          sendData({ 
+            type: 'batch_complete', 
             data: batchAnswers,
-            total: allAnswers.length,
-            progress: 60 + Math.round(((i + batch.length) / questions.length) * 35)
+            completed: allAnswers.length,
+            total: questions.length
           });
         }
 
+        // Send completion
         console.log(`Step 3: Completed! Returning ${allAnswers.length} answers`);
-        sendData({
-          type: 'complete',
+        sendData({ 
+          type: 'complete', 
           answers: allAnswers,
           extractedQuestions: questions,
-          progress: 100
+          totalAnswers: allAnswers.length
         });
 
         controller.close();
       } catch (error: any) {
         console.error('Streaming error:', error);
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({
-          type: 'error',
-          message: error.message || 'An unexpected error occurred'
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ 
+          type: 'error', 
+          message: error.message || 'An error occurred while processing your request'
         })}\n\n`));
         controller.close();
       }
@@ -314,6 +317,7 @@ export async function POST(req: NextRequest) {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no', // Disable nginx buffering
     },
   });
 }
