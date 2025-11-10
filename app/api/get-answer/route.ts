@@ -224,5 +224,8 @@ export async function POST(req: NextRequest) {
   }
 
   console.log(`Step 3: Completed! Returning ${allAnswers.length} answers`);
-  return NextResponse.json({ answers: allAnswers });
+  return NextResponse.json({ 
+    answers: allAnswers,
+    extractedQuestions: questions // Include the extracted questions with options
+  });
 }

@@ -7,14 +7,18 @@ type GeminiModel = 'gemini-2.5-flash' | 'gemini-2.5-flash-lite' | 'gemini-2.0-fl
 export default function Home() {
   const [text, setText] = useState('');
   const [answers, setAnswers] = useState<any[]>([]);
+  const [extractedQuestions, setExtractedQuestions] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [selectedModel, setSelectedModel] = useState<GeminiModel>('gemini-2.0-flash-lite');
+  const [copySuccess, setCopySuccess] = useState(false);
 
   const getAnswers = async () => {
     setLoading(true);
     setError('');
     setAnswers([]);
+    setExtractedQuestions([]);
+    setCopySuccess(false);
     try {
       const res = await fetch('/api/get-answer', {
         method: 'POST',
@@ -30,11 +34,20 @@ export default function Home() {
 
       const data = await res.json();
       setAnswers(data.answers);
+      setExtractedQuestions(data.extractedQuestions || []);
     } catch (err: any) {
       setError(err.message);
     } finally {
       setLoading(false);
     }
+  };
+
+  const copyQuestionsJSON = () => {
+    const jsonString = JSON.stringify(extractedQuestions, null, 2);
+    navigator.clipboard.writeText(jsonString).then(() => {
+      setCopySuccess(true);
+      setTimeout(() => setCopySuccess(false), 2000);
+    });
   };
 
   return (
@@ -122,12 +135,36 @@ export default function Home() {
               <h2 className="text-2xl md:text-3xl font-bold text-gray-800 dark:text-gray-100">
                 📝 Answers ({answers.length})
               </h2>
-              <button
-                onClick={() => setAnswers([])}
-                className="text-sm text-gray-500 hover:text-red-500 dark:text-gray-400 dark:hover:text-red-400 transition-colors"
-              >
-                Clear
-              </button>
+              <div className="flex gap-2">
+                {extractedQuestions.length > 0 && (
+                  <button
+                    onClick={copyQuestionsJSON}
+                    className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm font-semibold rounded-lg shadow-md hover:shadow-lg transform hover:scale-105 transition-all duration-200"
+                  >
+                    {copySuccess ? (
+                      <>
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                        Copied!
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                        Copy Questions JSON
+                      </>
+                    )}
+                  </button>
+                )}
+                <button
+                  onClick={() => setAnswers([])}
+                  className="text-sm text-gray-500 hover:text-red-500 dark:text-gray-400 dark:hover:text-red-400 transition-colors"
+                >
+                  Clear
+                </button>
+              </div>
             </div>
             <div className="space-y-4 md:space-y-5">
               {answers.map((item, index) => (
