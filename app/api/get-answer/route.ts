@@ -50,6 +50,7 @@ async function findAnswersBatchGemini(
     } catch (err) {
       const error = err as any;
       console.error(`Gemini API batch error (attempt ${attempt + 1}):`, error?.message || error);
+      console.error('Full error details:', JSON.stringify(error, null, 2));
 
       const details = error?.errorDetails || error?.error?.errorDetails || [];
       const retryInfo = Array.isArray(details)
@@ -72,16 +73,29 @@ async function findAnswersBatchGemini(
       }
 
       console.error('Non-retryable Gemini API error or max retries reached (batch):', error);
+      console.error('Error status:', error?.status);
+      console.error('Error message:', error?.message);
       break;
     }
   }
 
   // If we get here, return errors for each question
-  return questions.map((q) => ({ question: q.question, answer: ['Error finding answer'] }));
+  console.error('Returning error responses for all questions in batch');
+  return questions.map((q) => ({ question: q.question, answer: [`Error: ${questions[0] ? 'API call failed' : 'Unknown error'}`] }));
 }
 
 export async function POST(req: NextRequest) {
   const { text, model } = await req.json();
+
+  // Debug: Check if API key is loaded
+  const apiKey = process.env.GEMINI_API_KEY;
+  console.log('API Key exists:', !!apiKey);
+  console.log('API Key length:', apiKey?.length || 0);
+  console.log('API Key prefix:', apiKey?.substring(0, 10) || 'undefined');
+
+  if (!apiKey) {
+    return NextResponse.json({ error: 'GEMINI_API_KEY not configured' }, { status: 500 });
+  }
 
   if (!text) {
     return NextResponse.json({ error: 'Text is required' }, { status: 400 });
