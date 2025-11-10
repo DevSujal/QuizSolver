@@ -10,6 +10,28 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Retry helper with exponential backoff
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = 3,
+  baseDelay: number = 1000
+): Promise<T> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      if (error.status === 429 && attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 1000; // Add jitter
+        console.log(`Rate limited. Retrying in ${Math.round(delay)}ms... (attempt ${attempt + 1}/${maxRetries + 1})`);
+        await sleep(delay);
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error('Max retries exceeded');
+}
+
 // Helper function to extract questions and options from raw text using Gemini
 // Processes text in chunks to avoid token limits
 async function extractQuestionsFromText(
@@ -23,14 +45,14 @@ async function extractQuestionsFromText(
   // Roughly 4 chars = 1 token, keep chunks under 25k chars (~6k tokens)
   const MAX_CHUNK_SIZE = 25000;
   const chunks: string[] = [];
-  
+
   if (rawText.length <= MAX_CHUNK_SIZE) {
     chunks.push(rawText);
   } else {
     // Split by trying to find natural breakpoints (double newlines)
     const parts = rawText.split('\n\n');
     let currentChunk = '';
-    
+
     for (const part of parts) {
       if ((currentChunk + part).length > MAX_CHUNK_SIZE && currentChunk) {
         chunks.push(currentChunk);
@@ -50,7 +72,7 @@ async function extractQuestionsFromText(
 
   for (let i = 0; i < chunks.length; i++) {
     console.log(`Extracting questions from chunk ${i + 1}/${chunks.length}...`);
-    
+
     const prompt = `You are provided with text that contains multiple-choice questions (MCQs). Extract all the questions and their answer options.
 
 TEXT:
@@ -73,7 +95,11 @@ Important:
 - If no questions are found, return an empty array []`;
 
     try {
-      const result = await model.generateContent(prompt);
+      // Use retry logic for API calls
+      const result = await retryWithBackoff(async () => {
+        const res = await model.generateContent(prompt);
+        return res;
+      });
       const response = await result.response;
       const text = await response.text();
 
@@ -86,7 +112,7 @@ Important:
       }
       const jsonString = text.substring(start, end + 1);
       const parsed = JSON.parse(jsonString) as Array<{ question: string; options: string[] }>;
-      
+
       console.log(`Extracted ${parsed.length} questions from chunk ${i + 1}`);
       allQuestions.push(...parsed);
     } catch (err) {
@@ -98,6 +124,9 @@ Important:
   console.log(`Total extracted: ${allQuestions.length} questions from all chunks`);
   return allQuestions;
 }
+
+export const dynamic = 'force-dynamic';
+export const maxDuration = 300;
 
 // Batch multiple questions into a single prompt and return answers for all of them using Gemini.
 async function findAnswersBatchGemini(
@@ -115,62 +144,32 @@ async function findAnswersBatchGemini(
 
   const prompt = `You are provided with multiple multiple-choice questions (MCQs).\n\n${promptParts.join('\n\n')}\n\nFor each question, identify all correct answer choices and return a single JSON array of objects with the following shape:\n[ { "question": "<the question text>", "answers": ["Correct Answer 1", "Correct Answer 2"] }, ... ]\nIf no answer is correct for a question, return an empty array for "answers". The response must be valid JSON and nothing else.`;
 
-  const maxRetries = 3;
-  let attempt = 0;
+  try {
+    const result = await retryWithBackoff(async () => {
+      const res = await model.generateContent(prompt);
+      return res;
+    });
+    const response = await result.response;
+    const text = await response.text();
 
-  while (attempt <= maxRetries) {
-    try {
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      const text = await response.text();
-
-      // Extract the first JSON array-like substring from the response
-      const start = text.indexOf('[');
-      const end = text.lastIndexOf(']');
-      if (start === -1 || end === -1) {
-        throw new Error('Could not find JSON array in model response');
-      }
-      const jsonString = text.substring(start, end + 1);
-      const parsed = JSON.parse(jsonString) as Array<{ question: string; answers: string[] }>;
-
-      // Normalize shape to return { question, answer }
-      const mapped = parsed.map((p) => ({ question: p.question, answer: p.answers }));
-      return mapped;
-    } catch (err) {
-      const error = err as any;
-      console.error(`Gemini API batch error (attempt ${attempt + 1}):`, error?.message || error);
-      console.error('Full error details:', JSON.stringify(error, null, 2));
-
-      const details = error?.errorDetails || error?.error?.errorDetails || [];
-      const retryInfo = Array.isArray(details)
-        ? details.find((d: any) => d['@type']?.includes('RetryInfo'))
-        : undefined;
-
-      if (error?.status === 429 || retryInfo) {
-        let delayMs = 1000 * Math.pow(2, attempt);
-        if (retryInfo && retryInfo.retryDelay) {
-          const match = String(retryInfo.retryDelay).match(/(\d+)(?:s)?/);
-          if (match) {
-            delayMs = parseInt(match[1], 10) * 1000;
-          }
-        }
-        delayMs = Math.min(delayMs, 60_000);
-        console.warn(`Rate limited by Gemini API. Waiting ${delayMs}ms before retrying...`);
-        await sleep(delayMs);
-        attempt += 1;
-        continue;
-      }
-
-      console.error('Non-retryable Gemini API error or max retries reached (batch):', error);
-      console.error('Error status:', error?.status);
-      console.error('Error message:', error?.message);
-      break;
+    // Extract the first JSON array-like substring from the response
+    const start = text.indexOf('[');
+    const end = text.lastIndexOf(']');
+    if (start === -1 || end === -1) {
+      throw new Error('Could not find JSON array in model response');
     }
-  }
+    const jsonString = text.substring(start, end + 1);
+    const parsed = JSON.parse(jsonString) as Array<{ question: string; answers: string[] }>;
 
-  // If we get here, return errors for each question
-  console.error('Returning error responses for all questions in batch');
-  return questions.map((q) => ({ question: q.question, answer: [`Error: ${questions[0] ? 'API call failed' : 'Unknown error'}`] }));
+    // Normalize shape to return { question, answer }
+    const mapped = parsed.map((p) => ({ question: p.question, answer: p.answers }));
+    return mapped;
+  } catch (err) {
+    console.error('Gemini API batch error:', err);
+    // If we get here, return errors for each question
+    console.error('Returning error responses for all questions in batch');
+    return questions.map((q) => ({ question: q.question, answer: [`Error: API call failed`] }));
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -179,8 +178,6 @@ export async function POST(req: NextRequest) {
   // Debug: Check if API key is loaded
   const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
   console.log('API Key exists:', !!apiKey);
-  console.log('API Key length:', apiKey?.length || 0);
-  console.log('API Key prefix:', apiKey?.substring(0, 10) || 'undefined');
 
   if (!apiKey) {
     return NextResponse.json({ error: 'NEXT_PUBLIC_GEMINI_API_KEY not configured' }, { status: 500 });
@@ -199,33 +196,96 @@ export async function POST(req: NextRequest) {
 
   const cleanedText = text.replaceAll(paragraphToRemove, '');
 
-  console.log('Step 1: Extracting questions from text using LLM...');
-  // Use LLM to extract questions and options from the cleaned text
-  const questions = await extractQuestionsFromText(cleanedText, selectedModel);
+  // Create a streaming response
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      try {
+        // Helper to send data
+        const sendData = (data: any) => {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+        };
 
-  if (questions.length === 0) {
-    return NextResponse.json({ 
-      error: 'No questions found in the text. Please make sure your text contains MCQ questions.' 
-    }, { status: 400 });
-  }
+        // Step 1: Extract questions
+        console.log('Step 1: Extracting questions from text using LLM...');
+        sendData({ type: 'status', message: 'Extracting questions from text...', step: 1 });
+        
+        const questions = await extractQuestionsFromText(cleanedText, selectedModel);
 
-  console.log(`Step 2: Found ${questions.length} questions, now finding answers in batches...`);
+        if (questions.length === 0) {
+          sendData({ type: 'error', message: 'No questions found in the text. Please make sure your text contains MCQ questions.' });
+          controller.close();
+          return;
+        }
 
-  // Process questions in batches of 20 to avoid overwhelming the LLM
-  const BATCH_SIZE = 20;
-  const allAnswers: { question: string; answer: string[] }[] = [];
+        // Send extracted questions
+        console.log(`Found ${questions.length} questions`);
+        sendData({ 
+          type: 'questions', 
+          data: questions,
+          count: questions.length 
+        });
 
-  for (let i = 0; i < questions.length; i += BATCH_SIZE) {
-    const batch = questions.slice(i, i + BATCH_SIZE);
-    console.log(`Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(questions.length / BATCH_SIZE)} (${batch.length} questions)`);
-    
-    const batchAnswers = await findAnswersBatchGemini(batch, selectedModel);
-    allAnswers.push(...batchAnswers);
-  }
+        // Step 2: Process answers in batches
+        console.log(`Step 2: Found ${questions.length} questions, now finding answers in batches...`);
+        sendData({ type: 'status', message: `Found ${questions.length} questions. Starting answer generation...`, step: 2 });
 
-  console.log(`Step 3: Completed! Returning ${allAnswers.length} answers`);
-  return NextResponse.json({ 
-    answers: allAnswers,
-    extractedQuestions: questions // Include the extracted questions with options
+        const BATCH_SIZE = 20;
+        const allAnswers: { question: string; answer: string[] }[] = [];
+
+        for (let i = 0; i < questions.length; i += BATCH_SIZE) {
+          const batch = questions.slice(i, i + BATCH_SIZE);
+          const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+          const totalBatches = Math.ceil(questions.length / BATCH_SIZE);
+
+          console.log(`Processing batch ${batchNum}/${totalBatches} (${batch.length} questions)`);
+          sendData({ 
+            type: 'progress', 
+            message: `Processing batch ${batchNum}/${totalBatches}...`,
+            current: i + batch.length,
+            total: questions.length,
+            percentage: Math.round(((i + batch.length) / questions.length) * 100)
+          });
+
+          const batchAnswers = await findAnswersBatchGemini(batch, selectedModel);
+          allAnswers.push(...batchAnswers);
+
+          // Stream each batch of answers as they complete
+          sendData({ 
+            type: 'batch_complete', 
+            data: batchAnswers,
+            completed: allAnswers.length,
+            total: questions.length
+          });
+        }
+
+        // Send completion
+        console.log(`Step 3: Completed! Returning ${allAnswers.length} answers`);
+        sendData({ 
+          type: 'complete', 
+          answers: allAnswers,
+          extractedQuestions: questions,
+          totalAnswers: allAnswers.length
+        });
+
+        controller.close();
+      } catch (error: any) {
+        console.error('Streaming error:', error);
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ 
+          type: 'error', 
+          message: error.message || 'An error occurred while processing your request'
+        })}\n\n`));
+        controller.close();
+      }
+    }
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no', // Disable nginx buffering
+    },
   });
 }

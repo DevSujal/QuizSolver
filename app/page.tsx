@@ -12,6 +12,8 @@ export default function Home() {
   const [error, setError] = useState('');
   const [selectedModel, setSelectedModel] = useState<GeminiModel>('gemini-2.0-flash-lite');
   const [copySuccess, setCopySuccess] = useState(false);
+  const [processingStatus, setProcessingStatus] = useState('');
+  const [progress, setProgress] = useState(0);
 
   const getAnswers = async () => {
     setLoading(true);
@@ -19,6 +21,9 @@ export default function Home() {
     setAnswers([]);
     setExtractedQuestions([]);
     setCopySuccess(false);
+    setProcessingStatus('');
+    setProgress(0);
+
     try {
       const res = await fetch('/api/get-answer', {
         method: 'POST',
@@ -32,13 +37,70 @@ export default function Home() {
         throw new Error('Failed to get answers');
       }
 
-      const data = await res.json();
-      setAnswers(data.answers);
-      setExtractedQuestions(data.extractedQuestions || []);
+      // Check if response is streaming (SSE)
+      const contentType = res.headers.get('content-type');
+      
+      if (contentType?.includes('text/event-stream')) {
+        // Handle streaming response
+        const reader = res.body?.getReader();
+        const decoder = new TextDecoder();
+
+        if (!reader) throw new Error('No reader available');
+
+        let allAnswers: any[] = [];
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\n');
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+
+                if (data.type === 'status') {
+                  setProcessingStatus(data.message);
+                } else if (data.type === 'progress') {
+                  setProcessingStatus(data.message);
+                  setProgress(data.percentage || 0);
+                } else if (data.type === 'questions') {
+                  setExtractedQuestions(data.data);
+                  setProcessingStatus(`Found ${data.count} questions`);
+                } else if (data.type === 'batch_complete') {
+                  allAnswers = [...allAnswers, ...data.data];
+                  setAnswers([...allAnswers]); // Update UI progressively
+                  setProcessingStatus(`Processed ${data.completed}/${data.total} questions`);
+                } else if (data.type === 'complete') {
+                  setAnswers(data.answers);
+                  setExtractedQuestions(data.extractedQuestions);
+                  setProcessingStatus('Complete!');
+                  setProgress(100);
+                } else if (data.type === 'error') {
+                  throw new Error(data.message);
+                }
+              } catch (e) {
+                console.warn('Error parsing SSE data:', e);
+              }
+            }
+          }
+        }
+      } else {
+        // Handle regular JSON response (fallback)
+        const data = await res.json();
+        setAnswers(data.answers || []);
+        setExtractedQuestions(data.extractedQuestions || []);
+      }
     } catch (err: any) {
       setError(err.message);
     } finally {
       setLoading(false);
+      setTimeout(() => {
+        setProcessingStatus('');
+        setProgress(0);
+      }, 2000);
     }
   };
 
@@ -110,12 +172,25 @@ export default function Home() {
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
-                Getting Answers...
+                {processingStatus || 'Getting Answers...'}
               </span>
             ) : (
               '✨ Get Answers'
             )}
           </button>
+
+          {/* Progress Bar */}
+          {loading && progress > 0 && (
+            <div className="mt-4">
+              <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                <div 
+                  className="bg-gradient-to-r from-blue-600 to-purple-600 h-2 rounded-full transition-all duration-300"
+                  style={{ width: `${progress}%` }}
+                ></div>
+              </div>
+              <p className="text-xs text-center mt-2 text-gray-600 dark:text-gray-400">{progress}% complete</p>
+            </div>
+          )}
         </div>
 
         {/* Error Message */}
