@@ -11,7 +11,7 @@ An AI-powered web application that helps you find answers to multiple-choice que
 
 - 🤖 **AI-Powered Answers** - Uses Google's Gemini AI to analyze and answer quiz questions
 - 🎯 **Batch Processing** - Handles multiple questions in a single request for efficiency
-- ⚡ **Three AI Models** - Choose between Gemini 2.5 Pro, Flash, or Flash Lite based on your needs
+- ⚡ **Four AI Models** - Choose between different Gemini models based on your needs
 - 📱 **Mobile-First Design** - Fully responsive UI that works beautifully on all devices
 - 🌓 **Dark Mode** - Automatic dark mode support based on system preferences
 - 🔄 **Smart Retry Logic** - Handles rate limits gracefully with automatic retries
@@ -78,10 +78,11 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ## 📖 Usage
 
-1. **Select AI Model** - Choose from three Gemini models:
-   - ⚡ **Flash Lite** - Fastest, best for free tier
-   - 🚀 **Flash** - Balanced speed and accuracy
-   - 💎 **Pro** - Most accurate for complex questions
+1. **Select AI Model** - Choose from four Gemini models:
+   - ⚡ **Gemini 2.0 Flash Lite** - Fastest, best for free tier quota
+   - 🚀 **Gemini 2.0 Flash** - Latest model with great speed and accuracy
+   - � **Gemini 2.5 Flash Lite** - Stable and reliable performance
+   - 💎 **Gemini 2.5 Flash** - Most accurate for complex questions
 
 2. **Paste Quiz Content** - Copy and paste your quiz questions and options into the text area
 
@@ -136,7 +137,7 @@ const qaRegex = /(\d+\.\s+Question\s+\d+[\s\S]*?)(?=1 point)/g;
 
 Google Gemini API has different rate limits based on your tier:
 
-- **Free Tier**: 2 requests per minute (Flash Lite recommended)
+- **Free Tier**: 2 requests per minute (Gemini 2.0 Flash Lite recommended)
 - **Paid Tier**: Higher limits based on your plan
 
 The app includes automatic retry logic that:
@@ -176,7 +177,7 @@ const inter = Inter({ subsets: ['latin'] })
 - Verify you haven't exceeded your quota limits
 
 ### Rate Limit (429) Errors
-- Switch to a lighter model (Flash Lite)
+- Switch to a lighter model (Gemini 2.0 Flash Lite)
 - Wait for the retry delay before making another request
 - Consider upgrading your Gemini API plan
 

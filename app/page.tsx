@@ -2,14 +2,14 @@
 
 import { useState } from 'react';
 
-type GeminiModel = 'gemini-2.5-pro' | 'gemini-2.5-flash' | 'gemini-2.5-flash-lite';
+type GeminiModel = 'gemini-2.5-flash' | 'gemini-2.5-flash-lite' | 'gemini-2.0-flash' | 'gemini-2.0-flash-lite';
 
 export default function Home() {
   const [text, setText] = useState('');
   const [answers, setAnswers] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [selectedModel, setSelectedModel] = useState<GeminiModel>('gemini-2.5-flash-lite');
+  const [selectedModel, setSelectedModel] = useState<GeminiModel>('gemini-2.0-flash-lite');
 
   const getAnswers = async () => {
     setLoading(true);
@@ -63,14 +63,16 @@ export default function Home() {
               onChange={(e) => setSelectedModel(e.target.value as GeminiModel)}
               className="w-full p-3 md:p-4 border-2 border-gray-200 dark:border-gray-700 rounded-xl focus:ring-4 focus:ring-blue-500/20 focus:border-blue-500 dark:focus:border-blue-400 transition-all duration-200 text-gray-900 dark:text-gray-100 bg-gray-50 dark:bg-gray-900 text-sm md:text-base cursor-pointer"
             >
-              <option value="gemini-2.5-flash-lite">⚡ Gemini 2.5 Flash Lite (Fastest, Free Tier)</option>
-              <option value="gemini-2.5-flash">🚀 Gemini 2.5 Flash (Balanced)</option>
-              <option value="gemini-2.5-pro">💎 Gemini 2.5 Pro (Most Accurate)</option>
+              <option value="gemini-2.0-flash-lite">⚡ Gemini 2.0 Flash Lite (Fastest & Free Tier)</option>
+              <option value="gemini-2.0-flash">🚀 Gemini 2.0 Flash (Fast & Accurate)</option>
+              <option value="gemini-2.5-flash-lite">💨 Gemini 2.5 Flash Lite (Stable)</option>
+              <option value="gemini-2.5-flash">💎 Gemini 2.5 Flash (Most Accurate)</option>
             </select>
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
-              {selectedModel === 'gemini-2.5-flash-lite' && '⚡ Ultra-fast responses with lower quota usage'}
-              {selectedModel === 'gemini-2.5-flash' && '🚀 Good balance of speed and accuracy'}
-              {selectedModel === 'gemini-2.5-pro' && '💎 Best accuracy for complex questions'}
+              {selectedModel === 'gemini-2.0-flash-lite' && '⚡ Ultra-fast responses, best for free tier quota'}
+              {selectedModel === 'gemini-2.0-flash' && '🚀 Latest model with great speed and accuracy'}
+              {selectedModel === 'gemini-2.5-flash-lite' && '💨 Stable and reliable performance'}
+              {selectedModel === 'gemini-2.5-flash' && '💎 Best accuracy for complex questions'}
             </p>
           </div>
 
